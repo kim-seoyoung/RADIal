@@ -97,7 +97,7 @@ class RadarSignalProcessing():
         assert lib in ['CuPy','PyTorch'] # Should be either 'CuPy' or 'PyTorch'
         self.lib = lib
         
-        assert method in ['PC','RA','RD'] # Should be either 'PC' or 'RA'
+        assert method in ['PC','RA','RD','mD'] # Should be either 'PC', 'RA', 'RD' or 'mD'
         self.method = method
 
         if(self.method == 'PC'):
@@ -149,6 +149,8 @@ class RadarSignalProcessing():
 
         if(self.method=='RD'):
             return RD_spectrums
+        elif(self.method=='mD'):
+            return self.__get_mD(RD_spectrums)
         elif(self.method=='PC'):
             return self.__get_PCL(RD_spectrums)
         else:
@@ -199,7 +201,58 @@ class RadarSignalProcessing():
         RangeBin = RangeBin/self.numSamplePerChirp*103.
         
         return np.vstack([RangeBin,DopplerBin_candidates,az,el]).transpose()
-        
+
+
+    def __get_mD(self, RD_spectrums, range_bin=None, rx_antenna=0):
+        """
+        단일 프레임의 Range-Doppler 맵에서 특정 거리 빈의
+        마이크로 도플러(도플러 프로파일)를 추출하는 함수.
+
+        참고로, 질문에 주신 `generate_micro_doppler_spectrogram` 코드는
+        여러 프레임(sequence)을 사용해 시간 축(STFT)을 만드는
+        진짜 \"마이크로 도플러 스펙트로그램\"이고,
+        이 클래스의 `run()`은 현재 한 프레임만 처리하므로
+        여기서는 **한 프레임 기준 도플러 프로파일**만 계산합니다.
+
+        Parameters
+        ----------
+        RD_spectrums : ndarray
+            한 프레임의 Range-Doppler 스펙트럼, shape = (numRange, numDoppler, numChannels).
+        range_bin : int or None
+            관심 거리 빈 인덱스. None이면 에너지가 가장 큰 거리 빈을 자동 선택.
+        rx_antenna : int
+            사용할 Rx 안테나 인덱스.
+
+        Returns
+        -------
+        doppler_profile : ndarray
+            선택된 거리 빈/안테나에 대한 도플러 파워 프로파일 (길이 numDoppler).
+        """
+        # 입력 체크
+        if RD_spectrums.ndim != 3:
+            raise ValueError(f"__get_mD expects RD_spectrums with shape (R, D, C), got {RD_spectrums.shape}")
+
+        num_range, num_doppler, num_channels = RD_spectrums.shape
+
+        if rx_antenna < 0 or rx_antenna >= num_channels:
+            raise ValueError(f"rx_antenna index {rx_antenna} out of bounds (0 ~ {num_channels-1})")
+
+        # 파워 스펙트럼
+        power_spectrum = np.abs(RD_spectrums) ** 2  # (R, D, C)
+
+        # range_bin 자동 선택: 선택한 Rx 안테나에 대해 도플러 축 평균 파워가 최대인 거리 빈
+        if range_bin is None:
+            power_profile_range = np.mean(power_spectrum[:, :, rx_antenna], axis=1)  # (R,)
+            range_bin = int(np.argmax(power_profile_range))
+
+        if range_bin < 0 or range_bin >= num_range:
+            raise ValueError(f"range_bin index {range_bin} out of bounds (0 ~ {num_range-1})")
+
+        # 선택된 거리 빈 / 안테나의 도플러 프로파일 (복소값 → 파워)
+        doppler_complex = RD_spectrums[range_bin, :, rx_antenna]  # (D,)
+        doppler_profile = np.abs(doppler_complex) ** 2
+
+        return doppler_profile
 
     def __get_RA(self,RD_spectrums):
 
@@ -256,3 +309,143 @@ class RadarSignalProcessing():
         doppler_bins = section_idx*self.numReducedDoppler+reduced_doppler_bins
 
         return doppler_bins
+
+
+def generate_micro_doppler_spectrogram(rsp,
+                                       load_adc_frame_fn,
+                                       start_frame,
+                                       num_frames,
+                                       range_bin=None,
+                                       rx_antenna=0,
+                                       window_size=32,
+                                       overlap=0.75,
+                                       frame_rate=10.0,
+                                       wavelength=0.0039):
+    """
+    여러 프레임에 대해 RadarSignalProcessing(RD 모드)를 사용하여
+    마이크로 도플러 스펙트로그램을 생성하는 헬퍼 함수.
+
+    이 함수는 질문에서 주신 `generate_micro_doppler_spectrogram` 구조를
+    그대로 따르되, Range-Doppler 계산을 `RadarSignalProcessing.run`
+    (method='RD')에 위임하는 형태로 구현되었습니다.
+
+    Parameters
+    ----------
+    rsp : RadarSignalProcessing
+        method='RD' 로 생성된 RadarSignalProcessing 인스턴스.
+    load_adc_frame_fn : callable
+        서명: `adc0, adc1, adc2, adc3 = load_adc_frame_fn(frame_idx)`
+        형태의 함수. 지정한 frame_idx의 4채널 ADC 데이터를 반환해야 합니다.
+    start_frame : int
+        시작 프레임 인덱스.
+    num_frames : int
+        분석할 프레임 개수.
+    range_bin : int or None
+        관심 거리 빈 인덱스. None이면 첫 유효 프레임에서 자동 선택 후
+        나머지 프레임에도 동일한 range_bin 사용.
+    rx_antenna : int
+        사용할 Rx 안테나 인덱스.
+    window_size : int
+        STFT 윈도우 크기 (프레임 개수 단위).
+    overlap : float
+        STFT 윈도우 오버랩 비율 (0~1).
+    frame_rate : float
+        프레임 레이트 [Hz].
+    wavelength : float
+        파장 [m] (도플러 속도 변환용).
+
+    Returns
+    -------
+    frequencies : ndarray
+        도플러 주파수 [Hz].
+    velocities : ndarray
+        도플러 속도 [m/s].
+    times : ndarray
+        시간 축 [초].
+    spectrogram : ndarray
+        마이크로 도플러 스펙트로그램 [주파수, 시간].
+    rd_maps : list of ndarray
+        각 프레임의 Range-Doppler 맵 (디버깅용).
+    """
+    print(f"Loading {num_frames} frames starting from {start_frame}...")
+
+    rd_maps = []
+    doppler_profiles = []
+
+    current_range_bin = range_bin
+
+    for frame_offset in range(num_frames):
+        frame_idx = start_frame + frame_offset
+
+        try:
+            # 1) ADC 데이터 로드
+            adc0, adc1, adc2, adc3 = load_adc_frame_fn(frame_idx)
+
+            # 2) Range-Doppler 맵 계산 (rsp는 method='RD' 여야 함)
+            rd_map = rsp.run(adc0, adc1, adc2, adc3)
+            # rd_map.shape = (numRange, numDoppler, numChannels)
+            rd_maps.append(rd_map)
+
+            # 3) range_bin 자동 선택 (첫 프레임에서 한 번만)
+            if current_range_bin is None:
+                power_profile = np.mean(np.abs(rd_map[:, :, rx_antenna]) ** 2, axis=1)
+                current_range_bin = int(np.argmax(power_profile))
+
+            # 4) 선택된 range_bin의 도플러 프로파일 추출
+            doppler_profile = rd_map[current_range_bin, :, rx_antenna]
+            doppler_profiles.append(doppler_profile)
+
+            if frame_offset % 10 == 0:
+                print(f"  Processed {frame_offset}/{num_frames} frames...")
+
+        except Exception as e:
+            print(f"Error loading / processing frame {frame_idx}: {e}")
+            continue
+
+    if len(doppler_profiles) == 0:
+        raise RuntimeError("No valid frames were processed for micro-Doppler spectrogram.")
+
+    # [num_frames_valid, numChirps] 형태
+    doppler_data = np.array(doppler_profiles)
+    print(f"Doppler data shape: {doppler_data.shape}")
+
+    nperseg = int(window_size)
+    noverlap = int(window_size * overlap)
+
+    spectrograms_all_chirps = []
+
+    # RadarSignalProcessing 내부 파라미터 사용
+    num_chirps = rsp.numChirps
+
+    for chirp_idx in range(num_chirps):
+        time_series = doppler_data[:, chirp_idx]
+
+        f, t, Sxx = signal.spectrogram(
+            time_series,
+            fs=frame_rate,
+            window='hann',
+            nperseg=nperseg,
+            noverlap=noverlap,
+            nfft=256,
+            return_onesided=False,
+            mode='magnitude'
+        )
+
+        spectrograms_all_chirps.append(Sxx)
+
+    # 모든 chirp 평균
+    spectrogram_avg = np.mean(spectrograms_all_chirps, axis=0)
+
+    # 주파수를 도플러 속도로 변환
+    doppler_velocity = (f * wavelength) / 2.0
+
+    # 주파수 중심 정렬
+    sorted_idx = np.argsort(f)
+    frequencies = f[sorted_idx]
+    velocities = doppler_velocity[sorted_idx]
+    spectrogram_sorted = spectrogram_avg[sorted_idx, :]
+
+    print(f"Spectrogram shape: {spectrogram_sorted.shape}")
+    print(f"Velocity range: {velocities.min():.2f} to {velocities.max():.2f} m/s")
+
+    return frequencies, velocities, t, spectrogram_sorted, rd_maps

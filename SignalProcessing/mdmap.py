@@ -23,8 +23,8 @@ class MicroDopplerGenerator:
         self.num_virtual = 192  # 가상 안테나 (16*12)
         
         # ADC 데이터 파라미터
-        self.num_samples_per_chirp = 256  # Range samples
-        self.num_chirps_per_frame = 64    # Chirps per frame
+        self.num_samples_per_chirp = 512  # Range samples
+        self.num_chirps_per_frame = 256    # Chirps per frame
         self.num_rx_per_chip = 4          # 칩당 Rx 안테나 개수
         
         # FMCW 파라미터 (실제 RADIal 파라미터로 조정 필요)
@@ -51,30 +51,60 @@ class MicroDopplerGenerator:
         adc_data = np.zeros((self.num_chirps_per_frame, self.num_rx, 
                             self.num_samples_per_chirp), dtype=np.complex64)
         
+        # Frame size calculations
+        # One frame per chip: num_samples * num_rx_per_chip * num_chirps
+        frame_size_complex = self.num_samples_per_chirp * self.num_rx_per_chip * self.num_chirps_per_frame
+        # 4 bytes per complex sample (2 bytes I + 2 bytes Q)
+        frame_size_bytes = frame_size_complex * 4
+        
+        seq_name = os.path.basename(sequence_path.rstrip(os.sep))
+        
         # 4개의 칩 파일 읽기 [web:29]
         for chip_id in range(4):
+            # Try original filename pattern
             adc_file = os.path.join(sequence_path, f'RECORD@{frame_idx:06d}@RADAR_{chip_id}.bin')
+            if not os.path.exists(adc_file):
+                # Try standard filename pattern e.g. RECORD@Timestamp_radar_ch0.bin
+                adc_file = os.path.join(sequence_path, f'{seq_name}_radar_ch{chip_id}.bin')
             
             if os.path.exists(adc_file):
-                # 바이너리 파일을 복소수 형태로 로드
-                raw_data = np.fromfile(adc_file, dtype=np.int16)
-                
-                # I/Q 데이터 분리 및 복소수 변환
-                I = raw_data[0::2].astype(np.float32)
-                Q = raw_data[1::2].astype(np.float32)
-                complex_data = I + 1j * Q
-                
-                # 형태 재구성: [chirps, rx_per_chip, samples]
-                complex_data = complex_data.reshape(
-                    self.num_chirps_per_frame, 
-                    self.num_rx_per_chip, 
-                    self.num_samples_per_chirp
-                )
-                
-                # 전체 배열에 삽입
-                rx_start = chip_id * self.num_rx_per_chip
-                rx_end = rx_start + self.num_rx_per_chip
-                adc_data[:, rx_start:rx_end, :] = complex_data
+                try:
+                    # Calculate offset
+                    offset = frame_idx * frame_size_bytes
+                    
+                    # Read specific frame using memmap
+                    # We read 2 * frame_size_complex (int16) elements
+                    raw_data = np.memmap(adc_file, dtype=np.int16, mode='r', 
+                                         offset=offset, 
+                                         shape=(frame_size_complex * 2,))
+                    
+                    # I/Q 데이터 분리 및 복소수 변환
+                    I = raw_data[0::2].astype(np.float32)
+                    Q = raw_data[1::2].astype(np.float32)
+                    complex_data = I + 1j * Q
+                    
+                    # 형태 재구성: 
+                    # rpl.py: reshape to (Samples, Rx, Chirps) with order='F'
+                    complex_data = complex_data.reshape(
+                        self.num_samples_per_chirp,
+                        self.num_rx_per_chip,
+                        self.num_chirps_per_frame,
+                        order='F'
+                    )
+                    
+                    # mdmap.py expects [chirps, rx, samples]
+                    # Transpose (Samples, Rx, Chirps) -> (Chirps, Rx, Samples)
+                    # Indices: (0, 1, 2) -> (2, 1, 0)
+                    complex_data = complex_data.transpose(2, 1, 0)
+                    
+                    # 전체 배열에 삽입
+                    rx_start = chip_id * self.num_rx_per_chip
+                    rx_end = rx_start + self.num_rx_per_chip
+                    adc_data[:, rx_start:rx_end, :] = complex_data
+                    
+                except Exception as e:
+                    print(f"Error reading chip {chip_id}: {e}")
+                    pass
                 
         return adc_data
     

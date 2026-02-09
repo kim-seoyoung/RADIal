@@ -1,0 +1,22 @@
+[project]
+name = "radial-dataset"
+version = "0.1.0"
+description = "RADIal dataset tools"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pandas",
+    "cantools",
+    "torch",
+    "pkbar",
+    "tensorboard",
+    "scipy",
+    "mkl-fft",
+    "matplotlib",
+    "ipykernel",
+    "opencv-python",
+    "db-reader",
+]
+
+[tool.uv.sources]
+db-reader = { path = "./DBReader", editable = true }

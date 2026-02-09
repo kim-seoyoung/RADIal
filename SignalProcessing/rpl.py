@@ -1,5 +1,8 @@
 import os
-import cupy as cp
+try:
+    import cupy as cp
+except ImportError:
+    cp = None
 import numpy as np
 import mkl_fft
 from scipy import signal

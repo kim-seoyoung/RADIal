@@ -78,3 +78,18 @@ To download the raw dataset, please visit the following [Link](https://linkly.li
 You will have then to use the SignalProcessing library to generate data for each modalities upon your need.
 
 We provide too a "ready to use" [dataset](https://linkly.link/2EakA) that can be loaded with the PyTorch data loader example provided in the [Loader](https://github.com/valeoai/RADIal/tree/main/loader) folder.
+
+# Environment Setup with uv
+
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
+
+To set up the environment:
+
+1. Install uv (if not already installed).
+2. Run `uv sync` to install dependencies.
+3. Use `uv run <command>` to run scripts or notebooks within the environment.
+
+Example:
+```bash
+uv run python FFTRadNet/1-Train.py
+```

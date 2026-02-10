@@ -2,6 +2,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy import signal
 from scipy.fft import fft, fftshift, fft2
+import sys
+sys.path.append('/path/to/RADIal')
+sys.path.append('/path/to/RADIal/SignalProcessing')
 import os
 
 class MicroDopplerGenerator:
@@ -15,7 +18,25 @@ class MicroDopplerGenerator:
         Args:
             calibration_table_path: CalibrationTable.npy 경로
         """
-        self.calib_table = np.load(calibration_table_path)
+        # Load calibration data (dict wrapped in 0-d array)
+        calib_data = np.load(calibration_table_path, allow_pickle=True).item()
+        
+        # Extract Signal table: Shape (Azimuth, Virtual, Elevation)
+        # Azimuth table: -75 to 75 (751 points)
+        # Elevation table: -4 to 6 (11 points)
+        az_table = calib_data['Azimuth_table']
+        el_table = calib_data['Elevation_table']
+        
+        # Find indices for boresight (0 degrees)
+        az_idx = np.argmin(np.abs(az_table - 0))
+        el_idx = np.argmin(np.abs(el_table - 0))
+        
+        # Extract calibration vector at boresight
+        # Shape: (751, 192, 11) -> (192,)
+        full_calib = calib_data['Signal'][az_idx, :, el_idx]
+        
+        # Take first 16 elements (Tx0, Rx0..15)
+        self.calib_table = full_calib[:16]
         
         # RADIal 레이더 사양 [web:29][web:57]
         self.num_rx = 16  # 수신 안테나
@@ -327,7 +348,7 @@ class MicroDopplerGenerator:
 # 사용 예제
 if __name__ == "__main__":
     # 파라미터 설정
-    calib_path = '/path/to/RADIal/SignalProcessing/CalibrationTable.npy'
+    calib_path = '/Users/kimseoyeong/radar/RADIal/SignalProcessing/CalibrationTable.npy'
     sequence_path = '/path/to/RADIal/sequences/RECORD@2019-09-16_12-31-03'
     
     # MicroDopplerGenerator 초기화
